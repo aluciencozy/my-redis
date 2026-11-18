@@ -1,6 +1,12 @@
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RespValue {
+    BulkString(Vec<u8>),
+    Array(Vec<RespValue>),
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 enum RespError {
     #[error("invalid UTF-8")]
     Utf8Error(#[from] std::str::Utf8Error),
@@ -18,7 +24,9 @@ enum RespError {
     UnsupportedType(u8),
 }
 
-fn parse_resp(buf: &[u8], pos: usize) -> Result<Option<(Vec<u8>, usize)>, RespError> {
+type ParseResult = Result<Option<(RespValue, usize)>, RespError>;
+
+fn parse_resp(buf: &[u8], pos: usize) -> ParseResult {
     let byte = match buf.get(pos) {
         Some(byte) => *byte,
         None => return Ok(None),
@@ -30,7 +38,7 @@ fn parse_resp(buf: &[u8], pos: usize) -> Result<Option<(Vec<u8>, usize)>, RespEr
     }
 }
 
-fn parse_bulk_string(buf: &[u8], pos: usize) -> Result<Option<(Vec<u8>, usize)>, RespError> {
+fn parse_bulk_string(buf: &[u8], pos: usize) -> ParseResult {
     let Some((payload_length, pos)) = parse_length(buf, pos)? else {
         return Ok(None);
     };
@@ -45,7 +53,10 @@ fn parse_bulk_string(buf: &[u8], pos: usize) -> Result<Option<(Vec<u8>, usize)>,
         return Ok(None);
     };
 
-    Ok(Some((buf[payload_start..payload_end].to_vec(), next_pos)))
+    Ok(Some((
+        RespValue::BulkString(buf[payload_start..payload_end].to_vec()),
+        next_pos,
+    )))
 }
 
 fn parse_crlf(buf: &[u8], pos: usize) -> Result<Option<usize>, RespError> {
@@ -66,11 +77,11 @@ fn parse_length(buf: &[u8], pos: usize) -> Result<Option<(i64, usize)>, RespErro
         None => return Ok(None),
     };
 
-    let digit_count = buf.iter().take_while(|b| b.is_ascii_digit()).count();
-
     if buf.is_empty() {
         return Ok(None);
     }
+
+    let digit_count = buf.iter().take_while(|b| b.is_ascii_digit()).count();
 
     if digit_count == 0 {
         return Err(RespError::ExpectedLength);
