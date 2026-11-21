@@ -1,4 +1,6 @@
 use thiserror::Error;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RespValue {
@@ -22,6 +24,52 @@ pub(crate) enum RespError {
 
     #[error("unsupported type: {0}")]
     UnsupportedType(u8),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HandlerError {
+    #[error(transparent)]
+    Parse(#[from] RespError),
+
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+#[derive(Debug)]
+pub(crate) struct RespHandler {
+    stream: TcpStream,
+    pending: Vec<u8>,
+}
+
+impl RespHandler {
+    pub(crate) fn new(stream: TcpStream) -> Self {
+        RespHandler {
+            stream,
+            pending: Vec::new(),
+        }
+    }
+
+    pub(crate) async fn read_value(&mut self) -> Result<Option<RespValue>, HandlerError> {
+        if let Some((value, next_pos)) = parse_resp(&self.pending, 0)? {
+            self.pending.drain(..next_pos);
+            return Ok(Some(value));
+        }
+
+        let mut chunk = [0u8; 512];
+
+        loop {
+            let bytes_read = self.stream.read(&mut chunk).await?;
+            if bytes_read == 0 {
+                return Ok(None);
+            }
+
+            self.pending.extend_from_slice(&chunk[..bytes_read]);
+        }
+    }
+
+    pub(crate) async fn write_reply(&mut self, reply: &[u8]) -> std::io::Result<()> {
+        self.stream.write_all(reply).await
+    }
 }
 
 pub(crate) type ParseResult = Result<Option<(RespValue, usize)>, RespError>;

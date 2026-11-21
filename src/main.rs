@@ -1,5 +1,4 @@
-use resp::RespValue;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use resp::{HandlerError, RespHandler, RespValue};
 use tokio::net::{TcpListener, TcpStream};
 
 mod resp;
@@ -12,40 +11,23 @@ async fn main() {
         let (socket, _) = listener.accept().await.unwrap();
 
         tokio::spawn(async move {
-            handle_connection(socket).await;
+            if let Err(err) = handle_connection(socket).await {
+                eprintln!("connection error: {err}");
+            }
         });
     }
 }
 
-async fn handle_connection(mut stream: TcpStream) {
-    let mut chunk = [0u8; 512];
-    let mut pending = Vec::new();
+async fn handle_connection(stream: TcpStream) -> Result<(), HandlerError> {
+    let mut handler = RespHandler::new(stream);
 
-    loop {
-        let bytes_read = stream.read(&mut chunk).await.unwrap();
-        if bytes_read == 0 {
-            break;
-        }
-
-        pending.extend_from_slice(&chunk[..bytes_read]);
-
-        loop {
-            let (request, next_pos) = match resp::parse_resp(&pending, 0) {
-                Ok(Some(parsed)) => parsed,
-                Ok(None) => break,
-                Err(err) => {
-                    eprintln!("invalid request: {err}");
-                    return;
-                }
-            };
-
-            if let Some(reply) = command_reply(request) {
-                stream.write_all(&reply).await.unwrap();
-            }
-
-            pending.drain(..next_pos);
+    while let Some(request) = handler.read_value().await? {
+        if let Some(reply) = command_reply(request) {
+            handler.write_reply(&reply).await?;
         }
     }
+
+    Ok(())
 }
 
 fn command_reply(request: RespValue) -> Option<Vec<u8>> {
