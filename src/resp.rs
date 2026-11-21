@@ -129,14 +129,17 @@ mod tests {
 
         let result = parse_resp(input, 0).unwrap();
 
-        assert_eq!(result, Some((b"hey".to_vec(), 9)));
+        assert_eq!(result, Some((RespValue::BulkString(b"hey".to_vec()), 9)));
     }
 
     #[test]
     fn parse_normal_bulk_string_2() {
         let input = b"$5\r\nhello\r\n";
 
-        assert_eq!(parse_resp(input, 0).unwrap(), Some((b"hello".to_vec(), 11)));
+        assert_eq!(
+            parse_resp(input, 0).unwrap(),
+            Some((RespValue::BulkString(b"hello".to_vec()), 11))
+        );
     }
 
     #[test]
@@ -144,5 +147,117 @@ mod tests {
         let incomplete = b"$5\r\nhel";
 
         assert_eq!(parse_resp(incomplete, 0).unwrap(), None);
+    }
+
+    #[test]
+    fn parse_empty_bulk_string() {
+        assert_eq!(
+            parse_resp(b"$0\r\n\r\n", 0).unwrap(),
+            Some((RespValue::BulkString(Vec::new()), 6))
+        );
+    }
+
+    #[test]
+    fn parse_bulk_string_with_multidigit_length() {
+        assert_eq!(
+            parse_resp(b"$12\r\nhello world!\r\n", 0).unwrap(),
+            Some((RespValue::BulkString(b"hello world!".to_vec()), 19))
+        );
+    }
+
+    #[test]
+    fn parse_bulk_string_with_binary_payload_and_embedded_crlf() {
+        assert_eq!(
+            parse_resp(b"$4\r\n\xff\r\n\0\r\n", 0).unwrap(),
+            Some((RespValue::BulkString(b"\xff\r\n\0".to_vec()), 10))
+        );
+    }
+
+    #[test]
+    fn parse_echo_array() {
+        let input = b"*2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n";
+        let expected = RespValue::Array(vec![
+            RespValue::BulkString(b"ECHO".to_vec()),
+            RespValue::BulkString(b"hey".to_vec()),
+        ]);
+
+        assert_eq!(parse_resp(input, 0).unwrap(), Some((expected, 23)));
+    }
+
+    #[test]
+    fn parse_empty_array() {
+        assert_eq!(
+            parse_resp(b"*0\r\n", 0).unwrap(),
+            Some((RespValue::Array(Vec::new()), 4))
+        );
+    }
+
+    #[test]
+    fn parse_nested_array() {
+        let input = b"*3\r\n*1\r\n$3\r\nhey\r\n*0\r\n$0\r\n\r\n";
+        let expected = RespValue::Array(vec![
+            RespValue::Array(vec![RespValue::BulkString(b"hey".to_vec())]),
+            RespValue::Array(Vec::new()),
+            RespValue::BulkString(Vec::new()),
+        ]);
+
+        assert_eq!(parse_resp(input, 0).unwrap(), Some((expected, 27)));
+    }
+
+    #[test]
+    fn parse_array_from_nonzero_position() {
+        let input = b"prefix*1\r\n$3\r\nhey\r\n";
+        let expected = RespValue::Array(vec![RespValue::BulkString(b"hey".to_vec())]);
+
+        assert_eq!(parse_resp(input, 6).unwrap(), Some((expected, 19)));
+    }
+
+    #[test]
+    fn parse_array_leaves_following_value_unconsumed() {
+        let input = b"*1\r\n$3\r\nhey\r\n$2\r\nhi\r\n";
+        let (value, next_pos) = parse_resp(input, 0).unwrap().unwrap();
+
+        assert_eq!(
+            value,
+            RespValue::Array(vec![RespValue::BulkString(b"hey".to_vec())])
+        );
+        assert_eq!(next_pos, 13);
+        assert_eq!(
+            parse_resp(input, next_pos).unwrap(),
+            Some((RespValue::BulkString(b"hi".to_vec()), 21))
+        );
+    }
+
+    #[test]
+    fn parse_incomplete_array_prefixes() {
+        let input = b"*2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n";
+
+        // Covers partial headers, a missing child, and a partial second child.
+        for end in 0..input.len() {
+            assert_eq!(
+                parse_resp(&input[..end], 0),
+                Ok(None),
+                "expected incomplete input for prefix ending at {end}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_array_rejects_malformed_input() {
+        let cases: &[(&[u8], RespError)] = &[
+            (b"*x\r\n", RespError::ExpectedLength),
+            (b"*1xx$0\r\n\r\n", RespError::ExpectedCrlf),
+            (b"*1\r\n?", RespError::UnsupportedType(b'?')),
+            (b"*1\r\n$3\r\nheyXX", RespError::ExpectedCrlf),
+            (b"*1\r\n*1\r\n?", RespError::UnsupportedType(b'?')),
+        ];
+
+        for (input, expected_error) in cases {
+            assert_eq!(
+                parse_resp(input, 0).as_ref().unwrap_err(),
+                expected_error,
+                "expected an error for {input:?}"
+            );
+        }
     }
 }
