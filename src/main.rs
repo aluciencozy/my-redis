@@ -1,4 +1,4 @@
-#![allow(unused_imports)]
+use resp::RespValue;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -30,17 +30,41 @@ async fn handle_connection(mut stream: TcpStream) {
         pending.extend_from_slice(&chunk[..bytes_read]);
 
         loop {
-            match resp::parse_resp(&pending, 0) {
-                Ok(Some((request, next_pos))) => {
-                    println!("{request:?}");
-                    pending.drain(..next_pos);
-                }
+            let (request, next_pos) = match resp::parse_resp(&pending, 0) {
+                Ok(Some(parsed)) => parsed,
                 Ok(None) => break,
                 Err(err) => {
                     eprintln!("invalid request: {err}");
                     return;
                 }
+            };
+
+            if let Some(reply) = command_reply(request) {
+                stream.write_all(&reply).await.unwrap();
             }
+
+            pending.drain(..next_pos);
         }
     }
+}
+
+fn command_reply(request: RespValue) -> Option<Vec<u8>> {
+    use RespValue::{Array, BulkString};
+
+    let Array(items) = request else {
+        return None;
+    };
+
+    let reply = match items.as_slice() {
+        [BulkString(command), BulkString(argument)] if command.eq_ignore_ascii_case(b"ECHO") => {
+            let mut reply = format!("${}\r\n", argument.len()).into_bytes();
+            reply.extend_from_slice(argument);
+            reply.extend_from_slice(b"\r\n");
+            reply
+        }
+        [BulkString(command)] if command.eq_ignore_ascii_case(b"PING") => b"+PONG\r\n".to_vec(),
+        _ => b"-ERR unsupported command or wrong number of arguments\r\n".to_vec(),
+    };
+
+    Some(reply)
 }
