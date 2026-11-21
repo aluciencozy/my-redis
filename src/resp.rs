@@ -1,13 +1,13 @@
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum RespValue {
+pub(crate) enum RespValue {
     BulkString(Vec<u8>),
     Array(Vec<RespValue>),
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
-enum RespError {
+pub(crate) enum RespError {
     #[error("invalid UTF-8")]
     Utf8Error(#[from] std::str::Utf8Error),
 
@@ -24,9 +24,9 @@ enum RespError {
     UnsupportedType(u8),
 }
 
-type ParseResult = Result<Option<(RespValue, usize)>, RespError>;
+pub(crate) type ParseResult = Result<Option<(RespValue, usize)>, RespError>;
 
-fn parse_resp(buf: &[u8], pos: usize) -> ParseResult {
+pub(crate) fn parse_resp(buf: &[u8], pos: usize) -> ParseResult {
     let byte = match buf.get(pos) {
         Some(byte) => *byte,
         None => return Ok(None),
@@ -39,6 +39,9 @@ fn parse_resp(buf: &[u8], pos: usize) -> ParseResult {
     }
 }
 
+// when a later element is incomplete all previously parsed
+// elements are dropped.
+// todo: preserve previously parsed elements
 fn parse_array(buf: &[u8], pos: usize) -> ParseResult {
     let Some((payload_length, pos)) = parse_length(buf, pos)? else {
         return Ok(None);
