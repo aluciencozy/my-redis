@@ -34,8 +34,32 @@ fn parse_resp(buf: &[u8], pos: usize) -> ParseResult {
 
     match byte {
         b'$' => parse_bulk_string(buf, pos + 1),
+        b'*' => parse_array(buf, pos + 1),
         b => Err(RespError::UnsupportedType(b)),
     }
+}
+
+fn parse_array(buf: &[u8], pos: usize) -> ParseResult {
+    let Some((payload_length, pos)) = parse_length(buf, pos)? else {
+        return Ok(None);
+    };
+
+    let Some(mut next_pos) = parse_crlf(buf, pos)? else {
+        return Ok(None);
+    };
+
+    let mut array = Vec::new();
+
+    for _ in 0..payload_length {
+        let Some((value, pos)) = parse_resp(buf, next_pos)? else {
+            return Ok(None);
+        };
+
+        next_pos = pos;
+        array.push(value);
+    }
+
+    Ok(Some((RespValue::Array(array), next_pos)))
 }
 
 fn parse_bulk_string(buf: &[u8], pos: usize) -> ParseResult {
