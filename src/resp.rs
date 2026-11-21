@@ -50,14 +50,14 @@ impl RespHandler {
     }
 
     pub(crate) async fn read_value(&mut self) -> Result<Option<RespValue>, HandlerError> {
-        if let Some((value, next_pos)) = parse_resp(&self.pending, 0)? {
-            self.pending.drain(..next_pos);
-            return Ok(Some(value));
-        }
-
-        let mut chunk = [0u8; 512];
-
         loop {
+            if let Some((value, next_pos)) = parse_resp(&self.pending, 0)? {
+                self.pending.drain(..next_pos);
+                return Ok(Some(value));
+            }
+
+            let mut chunk = [0u8; 512];
+
             let bytes_read = self.stream.read(&mut chunk).await?;
             if bytes_read == 0 {
                 return Ok(None);
