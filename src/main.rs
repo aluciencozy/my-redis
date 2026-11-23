@@ -42,30 +42,50 @@ async fn handle_connection(stream: TcpStream, store: Store) -> Result<(), Handle
 fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
     use RespValue::{Array, BulkString};
 
+    const COMMAND_ERROR: &[u8] = b"-ERR unsupported command or wrong number of arguments\r\n";
+
     let Array(items) = request else {
         return None;
     };
 
-    let reply = match items.as_slice() {
-        [BulkString(command), BulkString(key), BulkString(value)]
-            if command.eq_ignore_ascii_case(b"SET") =>
-        {
-            let mut store = store.lock().unwrap();
-            store.insert(key.clone(), value.clone());
+    let mut args = items.into_iter();
+    let Some(BulkString(command)) = args.next() else {
+        return Some(COMMAND_ERROR.to_vec());
+    };
+
+    let reply = match command.as_slice() {
+        command if command.eq_ignore_ascii_case(b"SET") => {
+            let (Some(BulkString(key)), Some(BulkString(value)), None) =
+                (args.next(), args.next(), args.next())
+            else {
+                return Some(COMMAND_ERROR.to_vec());
+            };
+
+            store.lock().unwrap().insert(key, value);
             b"+OK\r\n".to_vec()
         }
-        [BulkString(command), BulkString(key)] if command.eq_ignore_ascii_case(b"GET") => {
+        command if command.eq_ignore_ascii_case(b"GET") => {
+            let (Some(BulkString(key)), None) = (args.next(), args.next()) else {
+                return Some(COMMAND_ERROR.to_vec());
+            };
+
             let store = store.lock().unwrap();
-            match store.get(key) {
+            match store.get(&key) {
                 Some(value) => encode_bulk_string(value),
                 None => b"$-1\r\n".to_vec(),
             }
         }
-        [BulkString(command), BulkString(argument)] if command.eq_ignore_ascii_case(b"ECHO") => {
-            encode_bulk_string(argument)
+        command if command.eq_ignore_ascii_case(b"ECHO") => {
+            let (Some(BulkString(argument)), None) = (args.next(), args.next()) else {
+                return Some(COMMAND_ERROR.to_vec());
+            };
+
+            encode_bulk_string(&argument)
         }
-        [BulkString(command)] if command.eq_ignore_ascii_case(b"PING") => b"+PONG\r\n".to_vec(),
-        _ => b"-ERR unsupported command or wrong number of arguments\r\n".to_vec(),
+        command if command.eq_ignore_ascii_case(b"PING") && args.next().is_none() => {
+            b"+PONG\r\n".to_vec()
+        }
+        _ => COMMAND_ERROR.to_vec(),
     };
 
     Some(reply)
