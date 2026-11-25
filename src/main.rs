@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -9,8 +9,13 @@ use tokio::net::{TcpListener, TcpStream};
 
 mod resp;
 
+enum Value {
+    String(Vec<u8>),
+    List(VecDeque<Vec<u8>>),
+}
+
 struct Entry {
-    value: Vec<u8>,
+    value: Value,
     expires_at: Option<Instant>,
 }
 
@@ -60,6 +65,56 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
     };
 
     let reply = match command.as_slice() {
+        command if command.eq_ignore_ascii_case(b"RPUSH") => {
+            let (Some(BulkString(key)), Some(BulkString(value))) = (args.next(), args.next())
+            else {
+                return Some(COMMAND_ERROR.to_vec());
+            };
+
+            let expiry_bytes = match args.next() {
+                None => None,
+                Some(BulkString(option)) if option.eq_ignore_ascii_case(b"PX") => {
+                    let (Some(BulkString(millis)), None) = (args.next(), args.next()) else {
+                        return Some(COMMAND_ERROR.to_vec());
+                    };
+                    Some(millis)
+                }
+                _ => return Some(COMMAND_ERROR.to_vec()),
+            };
+
+            let expires_at = match expiry_bytes {
+                None => None,
+                Some(bytes) => {
+                    let deadline = std::str::from_utf8(&bytes)
+                        .ok()
+                        .and_then(|text| text.parse::<u64>().ok())
+                        .filter(|&millis| millis > 0)
+                        .and_then(|millis| {
+                            Instant::now().checked_add(Duration::from_millis(millis))
+                        });
+
+                    let Some(deadline) = deadline else {
+                        return Some(b"-ERR invalid expire time in 'set' command\r\n".to_vec());
+                    };
+
+                    Some(deadline)
+                }
+            };
+
+            let mut list = VecDeque::new();
+            list.push_back(value);
+            let len = list.len();
+
+            store.lock().unwrap().insert(
+                key,
+                Entry {
+                    value: Value::List(list),
+                    expires_at,
+                },
+            );
+
+            format!(":{}\r\n", len).into_bytes()
+        }
         command if command.eq_ignore_ascii_case(b"SET") => {
             let (Some(BulkString(key)), Some(BulkString(value))) = (args.next(), args.next())
             else {
@@ -96,10 +151,13 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
                 }
             };
 
-            store
-                .lock()
-                .unwrap()
-                .insert(key, Entry { value, expires_at });
+            store.lock().unwrap().insert(
+                key,
+                Entry {
+                    value: Value::String(value),
+                    expires_at,
+                },
+            );
             b"+OK\r\n".to_vec()
         }
         command if command.eq_ignore_ascii_case(b"GET") => {
@@ -117,7 +175,13 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
                     store.remove(&key);
                     b"$-1\r\n".to_vec()
                 }
-                Some(entry) => encode_bulk_string(&entry.value),
+                Some(entry) => {
+                    if let Value::String(value) = &entry.value {
+                        encode_bulk_string(value)
+                    } else {
+                        b"$-1\r\n".to_vec()
+                    }
+                }
                 None => b"$-1\r\n".to_vec(),
             }
         }
