@@ -76,6 +76,11 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
                 Some(entry) => {
                     if let Value::List(list) = &mut entry.value {
                         list.push_back(value);
+
+                        while let Some(BulkString(value)) = args.next() {
+                            list.push_back(value);
+                        }
+
                         format!(":{}\r\n", list.len()).into_bytes()
                     } else {
                         return Some(COMMAND_ERROR.to_vec());
@@ -85,6 +90,12 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
                     let mut list = VecDeque::new();
                     list.push_back(value);
 
+                    while let Some(BulkString(value)) = args.next() {
+                        list.push_back(value);
+                    }
+
+                    let len = list.len();
+
                     store.insert(
                         key,
                         Entry {
@@ -93,7 +104,7 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
                         },
                     );
 
-                    b":1\r\n".to_vec()
+                    format!(":{}\r\n", len).into_bytes()
                 }
             }
         }
