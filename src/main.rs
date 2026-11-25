@@ -71,49 +71,31 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
                 return Some(COMMAND_ERROR.to_vec());
             };
 
-            let expiry_bytes = match args.next() {
-                None => None,
-                Some(BulkString(option)) if option.eq_ignore_ascii_case(b"PX") => {
-                    let (Some(BulkString(millis)), None) = (args.next(), args.next()) else {
+            let mut store = store.lock().unwrap();
+            match store.get_mut(&key) {
+                Some(entry) => {
+                    if let Value::List(list) = &mut entry.value {
+                        list.push_back(value);
+                        format!(":{}\r\n", list.len()).into_bytes()
+                    } else {
                         return Some(COMMAND_ERROR.to_vec());
-                    };
-                    Some(millis)
+                    }
                 }
-                _ => return Some(COMMAND_ERROR.to_vec()),
-            };
+                None => {
+                    let mut list = VecDeque::new();
+                    list.push_back(value);
 
-            let expires_at = match expiry_bytes {
-                None => None,
-                Some(bytes) => {
-                    let deadline = std::str::from_utf8(&bytes)
-                        .ok()
-                        .and_then(|text| text.parse::<u64>().ok())
-                        .filter(|&millis| millis > 0)
-                        .and_then(|millis| {
-                            Instant::now().checked_add(Duration::from_millis(millis))
-                        });
+                    store.insert(
+                        key,
+                        Entry {
+                            value: Value::List(list),
+                            expires_at: None,
+                        },
+                    );
 
-                    let Some(deadline) = deadline else {
-                        return Some(b"-ERR invalid expire time in 'set' command\r\n".to_vec());
-                    };
-
-                    Some(deadline)
+                    b":1\r\n".to_vec()
                 }
-            };
-
-            let mut list = VecDeque::new();
-            list.push_back(value);
-            let len = list.len();
-
-            store.lock().unwrap().insert(
-                key,
-                Entry {
-                    value: Value::List(list),
-                    expires_at,
-                },
-            );
-
-            format!(":{}\r\n", len).into_bytes()
+            }
         }
         command if command.eq_ignore_ascii_case(b"SET") => {
             let (Some(BulkString(key)), Some(BulkString(value))) = (args.next(), args.next())
