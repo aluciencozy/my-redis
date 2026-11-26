@@ -84,23 +84,41 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
                             return Some(COMMAND_ERROR.to_vec());
                         };
 
-                        let (Ok(start), Ok(stop)) =
-                            (start_str.parse::<usize>(), stop_str.parse::<usize>())
+                        let (Ok(mut start), Ok(mut stop)) =
+                            (start_str.parse::<isize>(), stop_str.parse::<isize>())
                         else {
                             return Some(COMMAND_ERROR.to_vec());
                         };
 
-                        if list.is_empty() || start >= list.len() || start > stop {
+                        let len = match isize::try_from(list.len()) {
+                            Ok(len) => len,
+                            Err(e) => {
+                                return Some(
+                                    format!("-ERR list len couldn't convert to isize: {}", e)
+                                        .into_bytes(),
+                                );
+                            }
+                        };
+                        if list.is_empty() {
                             b"*0\r\n".to_vec()
                         } else {
-                            let stop = std::cmp::min(stop, list.len() - 1);
-                            let count = stop - start + 1;
-
-                            let mut response = format!("*{count}\r\n").into_bytes();
-                            for item in list.iter().take(stop + 1).skip(start) {
-                                response.extend(encode_bulk_string(item));
+                            if start < 0 {
+                                start = (len + start).max(0);
                             }
-                            response
+                            stop = if stop < 0 { len + stop } else { stop };
+
+                            if start >= len || stop < 0 || start > stop {
+                                b"*0\r\n".to_vec()
+                            } else {
+                                stop = stop.min(len - 1);
+                                let count = (stop - start + 1) as usize;
+
+                                let mut response = format!("*{count}\r\n").into_bytes();
+                                for item in list.iter().skip(start as usize).take(count) {
+                                    response.extend(encode_bulk_string(item));
+                                }
+                                response
+                            }
                         }
                     } else {
                         return Some(COMMAND_ERROR.to_vec());
