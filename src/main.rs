@@ -65,6 +65,23 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
     };
 
     let reply = match command.as_slice() {
+        command if command.eq_ignore_ascii_case(b"LLEN") => {
+            let Some(BulkString(key)) = args.next() else {
+                return Some(COMMAND_ERROR.to_vec());
+            };
+
+            let store = store.lock().unwrap();
+            match store.get(&key) {
+                Some(entry) => {
+                    if let Value::List(list) = &entry.value {
+                        format!(":{}\r\n", list.len()).into_bytes()
+                    } else {
+                        return Some(COMMAND_ERROR.to_vec());
+                    }
+                }
+                None => b":0\r\n".to_vec(),
+            }
+        }
         command if command.eq_ignore_ascii_case(b"LPUSH") => {
             let (Some(BulkString(key)), Some(BulkString(value))) = (args.next(), args.next())
             else {
