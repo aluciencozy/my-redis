@@ -65,6 +65,23 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
     };
 
     let reply = match command.as_slice() {
+        command if command.eq_ignore_ascii_case(b"LPOP") => {
+            let Some(BulkString(key)) = args.next() else {
+                return Some(COMMAND_ERROR.to_vec());
+            };
+
+            let mut store = store.lock().unwrap();
+            match store.get_mut(&key) {
+                Some(entry) => {
+                    if let Value::List(list) = &mut entry.value {
+                        encode_bulk_string(&list.pop_front().unwrap_or_else(|| b"$-1\r\n".to_vec()))
+                    } else {
+                        return Some(COMMAND_ERROR.to_vec());
+                    }
+                }
+                None => b"$-1\r\n".to_vec(),
+            }
+        }
         command if command.eq_ignore_ascii_case(b"LLEN") => {
             let Some(BulkString(key)) = args.next() else {
                 return Some(COMMAND_ERROR.to_vec());
