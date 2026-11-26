@@ -74,7 +74,31 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
             match store.get_mut(&key) {
                 Some(entry) => {
                     if let Value::List(list) = &mut entry.value {
-                        encode_bulk_string(&list.pop_front().unwrap_or_else(|| b"$-1\r\n".to_vec()))
+                        let Some(BulkString(count)) = args.next() else {
+                            return Some(encode_bulk_string(
+                                &list.pop_front().unwrap_or_else(|| b"$-1\r\n".to_vec()),
+                            ));
+                        };
+
+                        let Ok(count_text) = std::str::from_utf8(&count) else {
+                            return Some(b"-ERR invalid UTF-8\r\n".to_vec());
+                        };
+
+                        let Ok(mut count) = count_text.parse::<usize>() else {
+                            return Some(b"-ERR invalid integer\r\n".to_vec());
+                        };
+
+                        if list.is_empty() || count == 0 {
+                            b"*0\r\n".to_vec()
+                        } else {
+                            count = count.min(list.len() - 1);
+
+                            let mut response = format!("*{count}\r\n").into_bytes();
+                            for _ in 0..count {
+                                response.extend(encode_bulk_string(&list.pop_front().unwrap()));
+                            }
+                            response
+                        }
                     } else {
                         return Some(COMMAND_ERROR.to_vec());
                     }
@@ -176,6 +200,7 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
                                 );
                             }
                         };
+
                         if list.is_empty() {
                             b"*0\r\n".to_vec()
                         } else {
