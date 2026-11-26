@@ -65,6 +65,49 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
     };
 
     let reply = match command.as_slice() {
+        command if command.eq_ignore_ascii_case(b"LPUSH") => {
+            let (Some(BulkString(key)), Some(BulkString(value))) = (args.next(), args.next())
+            else {
+                return Some(COMMAND_ERROR.to_vec());
+            };
+
+            let mut store = store.lock().unwrap();
+            match store.get_mut(&key) {
+                Some(entry) => {
+                    if let Value::List(list) = &mut entry.value {
+                        list.push_front(value);
+
+                        while let Some(BulkString(value)) = args.next() {
+                            list.push_front(value);
+                        }
+
+                        format!(":{}\r\n", list.len()).into_bytes()
+                    } else {
+                        return Some(COMMAND_ERROR.to_vec());
+                    }
+                }
+                None => {
+                    let mut list = VecDeque::new();
+                    list.push_front(value);
+
+                    while let Some(BulkString(value)) = args.next() {
+                        list.push_front(value);
+                    }
+
+                    let len = list.len();
+
+                    store.insert(
+                        key,
+                        Entry {
+                            value: Value::List(list),
+                            expires_at: None,
+                        },
+                    );
+
+                    format!(":{}\r\n", len).into_bytes()
+                }
+            }
+        }
         command if command.eq_ignore_ascii_case(b"LRANGE") => {
             let (Some(BulkString(list_key)), Some(BulkString(start)), Some(BulkString(stop))) =
                 (args.next(), args.next(), args.next())
