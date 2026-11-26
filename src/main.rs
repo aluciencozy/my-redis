@@ -65,6 +65,50 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
     };
 
     let reply = match command.as_slice() {
+        command if command.eq_ignore_ascii_case(b"LRANGE") => {
+            let (Some(BulkString(list_key)), Some(BulkString(start)), Some(BulkString(stop))) =
+                (args.next(), args.next(), args.next())
+            else {
+                return Some(COMMAND_ERROR.to_vec());
+            };
+
+            let store = store.lock().unwrap();
+            match store.get(&list_key) {
+                Some(entry) => {
+                    if let Value::List(list) = &entry.value {
+                        let Ok(start_str) = std::str::from_utf8(&start) else {
+                            return Some(COMMAND_ERROR.to_vec());
+                        };
+
+                        let Ok(stop_str) = std::str::from_utf8(&stop) else {
+                            return Some(COMMAND_ERROR.to_vec());
+                        };
+
+                        let (Ok(start), Ok(stop)) =
+                            (start_str.parse::<usize>(), stop_str.parse::<usize>())
+                        else {
+                            return Some(COMMAND_ERROR.to_vec());
+                        };
+
+                        if list.is_empty() || start >= list.len() || start > stop {
+                            b"*0\r\n".to_vec()
+                        } else {
+                            let stop = std::cmp::min(stop, list.len() - 1);
+                            let count = stop - start + 1;
+
+                            let mut response = format!("*{count}\r\n").into_bytes();
+                            for item in list.iter().take(stop + 1).skip(start) {
+                                response.extend(encode_bulk_string(item));
+                            }
+                            response
+                        }
+                    } else {
+                        return Some(COMMAND_ERROR.to_vec());
+                    }
+                }
+                None => b"*0\r\n".to_vec(),
+            }
+        }
         command if command.eq_ignore_ascii_case(b"RPUSH") => {
             let (Some(BulkString(key)), Some(BulkString(value))) = (args.next(), args.next())
             else {
