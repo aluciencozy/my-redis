@@ -66,7 +66,7 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
 
     let reply = match command.as_slice() {
         command if command.eq_ignore_ascii_case(b"LPOP") => {
-            let Some(BulkString(key)) = args.next() else {
+            let (Some(BulkString(key)), None) = (args.next(), args.next()) else {
                 return Some(COMMAND_ERROR.to_vec());
             };
 
@@ -75,9 +75,16 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
                 Some(entry) => {
                     if let Value::List(list) = &mut entry.value {
                         let Some(BulkString(count)) = args.next() else {
-                            return Some(encode_bulk_string(
-                                &list.pop_front().unwrap_or_else(|| b"$-1\r\n".to_vec()),
-                            ));
+                            let return_value = match list.pop_front() {
+                                Some(value) => encode_bulk_string(&value),
+                                None => b"$-1\r\n".to_vec(),
+                            };
+
+                            if list.is_empty() {
+                                store.remove(&key);
+                            };
+
+                            return Some(return_value);
                         };
 
                         let Ok(count_text) = std::str::from_utf8(&count) else {
@@ -91,12 +98,17 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
                         if list.is_empty() || count == 0 {
                             b"*0\r\n".to_vec()
                         } else {
-                            count = count.min(list.len() - 1);
+                            count = count.min(list.len());
 
                             let mut response = format!("*{count}\r\n").into_bytes();
                             for _ in 0..count {
                                 response.extend(encode_bulk_string(&list.pop_front().unwrap()));
                             }
+
+                            if list.is_empty() {
+                                store.remove(&key);
+                            };
+
                             response
                         }
                     } else {
@@ -107,7 +119,7 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
             }
         }
         command if command.eq_ignore_ascii_case(b"LLEN") => {
-            let Some(BulkString(key)) = args.next() else {
+            let (Some(BulkString(key)), None) = (args.next(), args.next()) else {
                 return Some(COMMAND_ERROR.to_vec());
             };
 
@@ -336,7 +348,8 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
                     if let Value::String(value) = &entry.value {
                         encode_bulk_string(value)
                     } else {
-                        b"$-1\r\n".to_vec()
+                        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+                            .to_vec()
                     }
                 }
                 None => b"$-1\r\n".to_vec(),
