@@ -25,7 +25,7 @@ struct Entry {
 type Store = Arc<Mutex<HashMap<Vec<u8>, Entry>>>;
 type CommandArgs = std::vec::IntoIter<RespValue>;
 
-const COMMAND_ERROR: &[u8] = b"-ERR unsupported command or wrong number of arguments\r\n";
+const COMMAND_ERROR_MESSAGE: &[u8] = b"ERR unsupported command or wrong number of arguments";
 
 #[tokio::main]
 async fn main() {
@@ -49,21 +49,22 @@ async fn handle_connection(stream: TcpStream, store: Store) -> Result<(), Handle
 
     while let Some(request) = handler.read_value().await? {
         if let Some(reply) = command_reply(request, &store) {
-            handler.write_reply(&reply).await?;
+            let bytes = reply.encode();
+            handler.write_reply(&bytes).await?;
         }
     }
 
     Ok(())
 }
 
-fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
+fn command_reply(request: RespValue, store: &Store) -> Option<RespValue> {
     let Array(items) = request else {
         return None;
     };
 
     let mut args = items.into_iter();
     let Some(BulkString(command)) = args.next() else {
-        return Some(COMMAND_ERROR.to_vec());
+        return Some(RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec()));
     };
 
     let reply = match command.as_slice() {
@@ -76,29 +77,29 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
         command if command.eq_ignore_ascii_case(b"GET") => get(args, store),
         command if command.eq_ignore_ascii_case(b"ECHO") => echo(args),
         command if command.eq_ignore_ascii_case(b"PING") => ping(args),
-        _ => COMMAND_ERROR.to_vec(),
+        _ => RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec()),
     };
 
     Some(reply)
 }
 
-fn lpop(mut args: CommandArgs, store: &Store) -> Vec<u8> {
+fn lpop(mut args: CommandArgs, store: &Store) -> RespValue {
     let Some(BulkString(key)) = args.next() else {
-        return COMMAND_ERROR.to_vec();
+        return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec());
     };
 
     let count = match (args.next(), args.next()) {
         (None, None) => None,
         (Some(BulkString(count)), None) => {
             let Ok(count_text) = std::str::from_utf8(&count) else {
-                return b"-ERR invalid UTF-8\r\n".to_vec();
+                return RespValue::Error(b"ERR invalid UTF-8".to_vec());
             };
             let Ok(count) = count_text.parse::<usize>() else {
-                return b"-ERR invalid integer\r\n".to_vec();
+                return RespValue::Error(b"ERR invalid integer".to_vec());
             };
             Some(count)
         }
-        _ => return COMMAND_ERROR.to_vec(),
+        _ => return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec()),
     };
 
     let mut store = store.lock().unwrap();
@@ -107,8 +108,8 @@ fn lpop(mut args: CommandArgs, store: &Store) -> Vec<u8> {
             if let Value::List(list) = &mut entry.value {
                 let Some(count) = count else {
                     let return_value = match list.pop_front() {
-                        Some(value) => encode_bulk_string(&value),
-                        None => b"$-1\r\n".to_vec(),
+                        Some(value) => RespValue::BulkString(value),
+                        None => RespValue::NullBulkString,
                     };
 
                     if list.is_empty() {
@@ -119,50 +120,50 @@ fn lpop(mut args: CommandArgs, store: &Store) -> Vec<u8> {
                 };
 
                 if list.is_empty() || count == 0 {
-                    b"*0\r\n".to_vec()
+                    RespValue::Array(Vec::new())
                 } else {
                     let count = count.min(list.len());
 
-                    let mut response = format!("*{count}\r\n").into_bytes();
+                    let mut response = Vec::new();
                     for _ in 0..count {
-                        response.extend(encode_bulk_string(&list.pop_front().unwrap()));
+                        response.push(RespValue::BulkString(list.pop_front().unwrap()));
                     }
 
                     if list.is_empty() {
                         store.remove(&key);
                     };
 
-                    response
+                    RespValue::Array(response)
                 }
             } else {
-                COMMAND_ERROR.to_vec()
+                RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec())
             }
         }
-        None => b"$-1\r\n".to_vec(),
+        None => RespValue::NullBulkString,
     }
 }
 
-fn llen(mut args: CommandArgs, store: &Store) -> Vec<u8> {
+fn llen(mut args: CommandArgs, store: &Store) -> RespValue {
     let (Some(BulkString(key)), None) = (args.next(), args.next()) else {
-        return COMMAND_ERROR.to_vec();
+        return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec());
     };
 
     let store = store.lock().unwrap();
     match store.get(&key) {
         Some(entry) => {
             if let Value::List(list) = &entry.value {
-                format!(":{}\r\n", list.len()).into_bytes()
+                RespValue::Integer(list.len() as i64)
             } else {
-                COMMAND_ERROR.to_vec()
+                RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec())
             }
         }
-        None => b":0\r\n".to_vec(),
+        None => RespValue::Integer(0),
     }
 }
 
-fn lpush(mut args: CommandArgs, store: &Store) -> Vec<u8> {
+fn lpush(mut args: CommandArgs, store: &Store) -> RespValue {
     let (Some(BulkString(key)), Some(BulkString(value))) = (args.next(), args.next()) else {
-        return COMMAND_ERROR.to_vec();
+        return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec());
     };
 
     let mut store = store.lock().unwrap();
@@ -175,9 +176,9 @@ fn lpush(mut args: CommandArgs, store: &Store) -> Vec<u8> {
                     list.push_front(value);
                 }
 
-                format!(":{}\r\n", list.len()).into_bytes()
+                RespValue::Integer(list.len() as i64)
             } else {
-                COMMAND_ERROR.to_vec()
+                RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec())
             }
         }
         None => {
@@ -198,26 +199,26 @@ fn lpush(mut args: CommandArgs, store: &Store) -> Vec<u8> {
                 },
             );
 
-            format!(":{}\r\n", len).into_bytes()
+            RespValue::Integer(len as i64)
         }
     }
 }
 
-fn lrange(mut args: CommandArgs, store: &Store) -> Vec<u8> {
+fn lrange(mut args: CommandArgs, store: &Store) -> RespValue {
     let (Some(BulkString(list_key)), Some(BulkString(start)), Some(BulkString(stop)), None) =
         (args.next(), args.next(), args.next(), args.next())
     else {
-        return COMMAND_ERROR.to_vec();
+        return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec());
     };
 
     let (Ok(start_str), Ok(stop_str)) = (std::str::from_utf8(&start), std::str::from_utf8(&stop))
     else {
-        return COMMAND_ERROR.to_vec();
+        return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec());
     };
 
     let (Ok(mut start), Ok(mut stop)) = (start_str.parse::<isize>(), stop_str.parse::<isize>())
     else {
-        return COMMAND_ERROR.to_vec();
+        return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec());
     };
 
     let store = store.lock().unwrap();
@@ -227,13 +228,14 @@ fn lrange(mut args: CommandArgs, store: &Store) -> Vec<u8> {
                 let len = match isize::try_from(list.len()) {
                     Ok(len) => len,
                     Err(e) => {
-                        return format!("-ERR list len couldn't convert to isize: {}\r\n", e)
-                            .into_bytes();
+                        return RespValue::Error(
+                            format!("ERR list len couldn't convert to isize: {}", e).into_bytes(),
+                        );
                     }
                 };
 
                 if list.is_empty() {
-                    b"*0\r\n".to_vec()
+                    RespValue::Array(Vec::new())
                 } else {
                     if start < 0 {
                         start = (len + start).max(0);
@@ -241,29 +243,32 @@ fn lrange(mut args: CommandArgs, store: &Store) -> Vec<u8> {
                     stop = if stop < 0 { len + stop } else { stop };
 
                     if start >= len || stop < 0 || start > stop {
-                        b"*0\r\n".to_vec()
+                        RespValue::Array(Vec::new())
                     } else {
                         stop = stop.min(len - 1);
                         let count = (stop - start + 1) as usize;
 
-                        let mut response = format!("*{count}\r\n").into_bytes();
-                        for item in list.iter().skip(start as usize).take(count) {
-                            response.extend(encode_bulk_string(item));
-                        }
-                        response
+                        let items = list
+                            .iter()
+                            .skip(start as usize)
+                            .take(count)
+                            .cloned()
+                            .map(RespValue::BulkString)
+                            .collect();
+                        RespValue::Array(items)
                     }
                 }
             } else {
-                COMMAND_ERROR.to_vec()
+                RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec())
             }
         }
-        None => b"*0\r\n".to_vec(),
+        None => RespValue::Array(Vec::new()),
     }
 }
 
-fn rpush(mut args: CommandArgs, store: &Store) -> Vec<u8> {
+fn rpush(mut args: CommandArgs, store: &Store) -> RespValue {
     let (Some(BulkString(key)), Some(BulkString(value))) = (args.next(), args.next()) else {
-        return COMMAND_ERROR.to_vec();
+        return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec());
     };
 
     let mut store = store.lock().unwrap();
@@ -276,9 +281,9 @@ fn rpush(mut args: CommandArgs, store: &Store) -> Vec<u8> {
                     list.push_back(value);
                 }
 
-                format!(":{}\r\n", list.len()).into_bytes()
+                RespValue::Integer(list.len() as i64)
             } else {
-                COMMAND_ERROR.to_vec()
+                RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec())
             }
         }
         None => {
@@ -299,25 +304,25 @@ fn rpush(mut args: CommandArgs, store: &Store) -> Vec<u8> {
                 },
             );
 
-            format!(":{}\r\n", len).into_bytes()
+            RespValue::Integer(len as i64)
         }
     }
 }
 
-fn set(mut args: CommandArgs, store: &Store) -> Vec<u8> {
+fn set(mut args: CommandArgs, store: &Store) -> RespValue {
     let (Some(BulkString(key)), Some(BulkString(value))) = (args.next(), args.next()) else {
-        return COMMAND_ERROR.to_vec();
+        return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec());
     };
 
     let expiry_bytes = match args.next() {
         None => None,
         Some(BulkString(option)) if option.eq_ignore_ascii_case(b"PX") => {
             let (Some(BulkString(millis)), None) = (args.next(), args.next()) else {
-                return COMMAND_ERROR.to_vec();
+                return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec());
             };
             Some(millis)
         }
-        _ => return COMMAND_ERROR.to_vec(),
+        _ => return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec()),
     };
 
     let expires_at = match expiry_bytes {
@@ -330,7 +335,7 @@ fn set(mut args: CommandArgs, store: &Store) -> Vec<u8> {
                 .and_then(|millis| Instant::now().checked_add(Duration::from_millis(millis)));
 
             let Some(deadline) = deadline else {
-                return b"-ERR invalid expire time in 'set' command\r\n".to_vec();
+                return RespValue::Error(b"ERR invalid expire time in 'set' command".to_vec());
             };
 
             Some(deadline)
@@ -344,12 +349,12 @@ fn set(mut args: CommandArgs, store: &Store) -> Vec<u8> {
             expires_at,
         },
     );
-    b"+OK\r\n".to_vec()
+    RespValue::SimpleString(b"OK".to_vec())
 }
 
-fn get(mut args: CommandArgs, store: &Store) -> Vec<u8> {
+fn get(mut args: CommandArgs, store: &Store) -> RespValue {
     let (Some(BulkString(key)), None) = (args.next(), args.next()) else {
-        return COMMAND_ERROR.to_vec();
+        return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec());
     };
 
     let mut store = store.lock().unwrap();
@@ -360,38 +365,33 @@ fn get(mut args: CommandArgs, store: &Store) -> Vec<u8> {
                 .is_some_and(|expiry| Instant::now() >= expiry) =>
         {
             store.remove(&key);
-            b"$-1\r\n".to_vec()
+            RespValue::NullBulkString
         }
         Some(entry) => {
             if let Value::String(value) = &entry.value {
-                encode_bulk_string(value)
+                RespValue::BulkString(value.clone())
             } else {
-                b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n".to_vec()
+                RespValue::Error(
+                    b"WRONGTYPE Operation against a key holding the wrong kind of value".to_vec(),
+                )
             }
         }
-        None => b"$-1\r\n".to_vec(),
+        None => RespValue::NullBulkString,
     }
 }
 
-fn echo(mut args: CommandArgs) -> Vec<u8> {
+fn echo(mut args: CommandArgs) -> RespValue {
     let (Some(BulkString(argument)), None) = (args.next(), args.next()) else {
-        return COMMAND_ERROR.to_vec();
+        return RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec());
     };
 
-    encode_bulk_string(&argument)
+    RespValue::BulkString(argument)
 }
 
-fn ping(mut args: CommandArgs) -> Vec<u8> {
+fn ping(mut args: CommandArgs) -> RespValue {
     if args.next().is_none() {
-        b"+PONG\r\n".to_vec()
+        RespValue::SimpleString(b"PONG".to_vec())
     } else {
-        COMMAND_ERROR.to_vec()
+        RespValue::Error(COMMAND_ERROR_MESSAGE.to_vec())
     }
-}
-
-fn encode_bulk_string(bytes: &[u8]) -> Vec<u8> {
-    let mut bulk_string = format!("${}\r\n", bytes.len()).into_bytes();
-    bulk_string.extend_from_slice(bytes);
-    bulk_string.extend_from_slice(b"\r\n");
-    bulk_string
 }
