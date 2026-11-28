@@ -5,10 +5,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::resp::{
-    RespValue,
-    RespValue::{Array, BulkString},
-};
+use crate::resp::RespValue;
 
 use super::{Entry, Store, Value};
 
@@ -57,12 +54,12 @@ pub(super) fn command_reply(
     request: RespValue,
     store: &Store,
 ) -> Result<Option<RespValue>, CommandError> {
-    let Array(items) = request else {
+    let RespValue::Array(items) = request else {
         return Ok(None);
     };
 
     let mut args = items.into_iter();
-    let Some(BulkString(command)) = args.next() else {
+    let Some(RespValue::BulkString(command)) = args.next() else {
         return Err(CommandError::UnsupportedCommand);
     };
 
@@ -83,13 +80,13 @@ pub(super) fn command_reply(
 }
 
 fn lpop(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError> {
-    let Some(BulkString(key)) = args.next() else {
+    let Some(RespValue::BulkString(key)) = args.next() else {
         return Err(CommandError::WrongNumberOfArguments);
     };
 
     let count = match (args.next(), args.next()) {
         (None, None) => None,
-        (Some(BulkString(count)), None) => {
+        (Some(RespValue::BulkString(count)), None) => {
             let Ok(count_text) = std::str::from_utf8(&count) else {
                 return Err(CommandError::InvalidUtf8);
             };
@@ -143,7 +140,7 @@ fn lpop(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError>
 }
 
 fn llen(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError> {
-    let (Some(BulkString(key)), None) = (args.next(), args.next()) else {
+    let (Some(RespValue::BulkString(key)), None) = (args.next(), args.next()) else {
         return Err(CommandError::WrongNumberOfArguments);
     };
 
@@ -158,7 +155,9 @@ fn llen(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError>
 }
 
 fn lpush(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError> {
-    let (Some(BulkString(key)), Some(BulkString(value))) = (args.next(), args.next()) else {
+    let (Some(RespValue::BulkString(key)), Some(RespValue::BulkString(value))) =
+        (args.next(), args.next())
+    else {
         return Err(CommandError::WrongNumberOfArguments);
     };
 
@@ -168,7 +167,7 @@ fn lpush(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError
             if let Value::List(list) = &mut entry.value {
                 list.push_front(value);
 
-                while let Some(BulkString(value)) = args.next() {
+                while let Some(RespValue::BulkString(value)) = args.next() {
                     list.push_front(value);
                 }
 
@@ -181,7 +180,7 @@ fn lpush(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError
             let mut list = VecDeque::new();
             list.push_front(value);
 
-            while let Some(BulkString(value)) = args.next() {
+            while let Some(RespValue::BulkString(value)) = args.next() {
                 list.push_front(value);
             }
 
@@ -201,8 +200,12 @@ fn lpush(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError
 }
 
 fn lrange(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError> {
-    let (Some(BulkString(list_key)), Some(BulkString(start)), Some(BulkString(stop)), None) =
-        (args.next(), args.next(), args.next(), args.next())
+    let (
+        Some(RespValue::BulkString(list_key)),
+        Some(RespValue::BulkString(start)),
+        Some(RespValue::BulkString(stop)),
+        None,
+    ) = (args.next(), args.next(), args.next(), args.next())
     else {
         return Err(CommandError::WrongNumberOfArguments);
     };
@@ -257,7 +260,9 @@ fn lrange(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandErro
 }
 
 fn rpush(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError> {
-    let (Some(BulkString(key)), Some(BulkString(value))) = (args.next(), args.next()) else {
+    let (Some(RespValue::BulkString(key)), Some(RespValue::BulkString(value))) =
+        (args.next(), args.next())
+    else {
         return Err(CommandError::WrongNumberOfArguments);
     };
 
@@ -267,7 +272,7 @@ fn rpush(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError
             if let Value::List(list) = &mut entry.value {
                 list.push_back(value);
 
-                while let Some(BulkString(value)) = args.next() {
+                while let Some(RespValue::BulkString(value)) = args.next() {
                     list.push_back(value);
                 }
 
@@ -280,7 +285,7 @@ fn rpush(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError
             let mut list = VecDeque::new();
             list.push_back(value);
 
-            while let Some(BulkString(value)) = args.next() {
+            while let Some(RespValue::BulkString(value)) = args.next() {
                 list.push_back(value);
             }
 
@@ -300,14 +305,16 @@ fn rpush(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError
 }
 
 fn set(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError> {
-    let (Some(BulkString(key)), Some(BulkString(value))) = (args.next(), args.next()) else {
+    let (Some(RespValue::BulkString(key)), Some(RespValue::BulkString(value))) =
+        (args.next(), args.next())
+    else {
         return Err(CommandError::WrongNumberOfArguments);
     };
 
     let expiry_bytes = match args.next() {
         None => None,
-        Some(BulkString(option)) if option.eq_ignore_ascii_case(b"PX") => {
-            let (Some(BulkString(millis)), None) = (args.next(), args.next()) else {
+        Some(RespValue::BulkString(option)) if option.eq_ignore_ascii_case(b"PX") => {
+            let (Some(RespValue::BulkString(millis)), None) = (args.next(), args.next()) else {
                 return Err(CommandError::WrongNumberOfArguments);
             };
             Some(millis)
@@ -344,7 +351,7 @@ fn set(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError> 
 }
 
 fn get(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError> {
-    let (Some(BulkString(key)), None) = (args.next(), args.next()) else {
+    let (Some(RespValue::BulkString(key)), None) = (args.next(), args.next()) else {
         return Err(CommandError::WrongNumberOfArguments);
     };
 
@@ -370,7 +377,7 @@ fn get(mut args: CommandArgs, store: &Store) -> Result<RespValue, CommandError> 
 }
 
 fn echo(mut args: CommandArgs) -> Result<RespValue, CommandError> {
-    let (Some(BulkString(argument)), None) = (args.next(), args.next()) else {
+    let (Some(RespValue::BulkString(argument)), None) = (args.next(), args.next()) else {
         return Err(CommandError::WrongNumberOfArguments);
     };
 
@@ -390,11 +397,11 @@ mod tests {
     use super::*;
 
     fn bulk(bytes: &[u8]) -> RespValue {
-        BulkString(bytes.to_vec())
+        RespValue::BulkString(bytes.to_vec())
     }
 
     fn run(store: &Store, parts: &[&[u8]]) -> Result<RespValue, CommandError> {
-        let request = Array(parts.iter().map(|part| bulk(part)).collect());
+        let request = RespValue::Array(parts.iter().map(|part| bulk(part)).collect());
         command_reply(request, store).map(|reply| reply.expect("expected a command reply"))
     }
 
@@ -479,7 +486,7 @@ mod tests {
         );
         assert_eq!(
             run(&store, &[b"LRANGE", b"list", b"0", b"-1"]).unwrap(),
-            Array(vec![bulk(b"a"), bulk(b"b"), bulk(b"c"), bulk(b"d")])
+            RespValue::Array(vec![bulk(b"a"), bulk(b"b"), bulk(b"c"), bulk(b"d")])
         );
     }
 
@@ -490,7 +497,7 @@ mod tests {
 
         assert_eq!(
             run(&store, &[b"LRANGE", b"list", b"-3", b"-2"]).unwrap(),
-            Array(vec![bulk(b"b"), bulk(b"c")])
+            RespValue::Array(vec![bulk(b"b"), bulk(b"c")])
         );
     }
 
@@ -512,7 +519,7 @@ mod tests {
 
         assert_eq!(
             run(&store, &[b"LPOP", b"list", b"2"]).unwrap(),
-            Array(vec![bulk(b"a"), bulk(b"b")])
+            RespValue::Array(vec![bulk(b"a"), bulk(b"b")])
         );
         assert_eq!(run(&store, &[b"LPOP", b"list"]).unwrap(), bulk(b"c"));
         assert_eq!(
