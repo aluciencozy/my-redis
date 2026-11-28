@@ -185,8 +185,20 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
             }
         }
         command if command.eq_ignore_ascii_case(b"LRANGE") => {
-            let (Some(BulkString(list_key)), Some(BulkString(start)), Some(BulkString(stop))) =
-                (args.next(), args.next(), args.next())
+            let (Some(BulkString(list_key)), Some(BulkString(start)), Some(BulkString(stop)), None) =
+                (args.next(), args.next(), args.next(), args.next())
+            else {
+                return Some(COMMAND_ERROR.to_vec());
+            };
+
+            let (Ok(start_str), Ok(stop_str)) =
+                (std::str::from_utf8(&start), std::str::from_utf8(&stop))
+            else {
+                return Some(COMMAND_ERROR.to_vec());
+            };
+
+            let (Ok(mut start), Ok(mut stop)) =
+                (start_str.parse::<isize>(), stop_str.parse::<isize>())
             else {
                 return Some(COMMAND_ERROR.to_vec());
             };
@@ -195,20 +207,6 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
             match store.get(&list_key) {
                 Some(entry) => {
                     if let Value::List(list) = &entry.value {
-                        let Ok(start_str) = std::str::from_utf8(&start) else {
-                            return Some(COMMAND_ERROR.to_vec());
-                        };
-
-                        let Ok(stop_str) = std::str::from_utf8(&stop) else {
-                            return Some(COMMAND_ERROR.to_vec());
-                        };
-
-                        let (Ok(mut start), Ok(mut stop)) =
-                            (start_str.parse::<isize>(), stop_str.parse::<isize>())
-                        else {
-                            return Some(COMMAND_ERROR.to_vec());
-                        };
-
                         let len = match isize::try_from(list.len()) {
                             Ok(len) => len,
                             Err(e) => {
