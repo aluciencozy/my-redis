@@ -4,8 +4,62 @@ use tokio::net::TcpStream;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RespValue {
-    BulkString(Vec<u8>),
-    Array(Vec<RespValue>),
+    BulkString(Vec<u8>),   // $5\r\nhello\r\n
+    Array(Vec<RespValue>), // *2\r\n$1\r\na\r\n$1\r\nb\r\n
+    SimpleString(Vec<u8>), // +OK\r\n
+    Integer(i64),          // :42\r\n
+    Error(Vec<u8>),        // -ERR invalid integer\r\n
+    NullBulkString,        // $-1\r\n
+    NullArray,             // *-1\r\n
+}
+
+impl RespValue {
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let mut buffer = Vec::new();
+        self.encode_into(&mut buffer);
+        buffer
+    }
+
+    fn encode_into(&self, buffer: &mut Vec<u8>) {
+        match self {
+            Self::BulkString(bytes) => {
+                let header = format!("${}\r\n", bytes.len());
+                buffer.reserve(header.len() + bytes.len() + 2);
+                buffer.extend_from_slice(header.as_bytes());
+                buffer.extend_from_slice(bytes);
+                buffer.extend_from_slice(b"\r\n");
+            }
+            Self::Array(vec) => {
+                let header = format!("*{}\r\n", vec.len());
+                buffer.extend_from_slice(header.as_bytes());
+
+                for item in vec {
+                    item.encode_into(buffer);
+                }
+            }
+            Self::SimpleString(bytes) => {
+                buffer.extend_from_slice(b"+");
+                buffer.extend_from_slice(bytes);
+                buffer.extend_from_slice(b"\r\n");
+            }
+            Self::Integer(int) => {
+                buffer.extend_from_slice(b":");
+                buffer.extend_from_slice(int.to_string().as_bytes());
+                buffer.extend_from_slice(b"\r\n");
+            }
+            Self::Error(bytes) => {
+                buffer.extend_from_slice(b"-");
+                buffer.extend_from_slice(bytes);
+                buffer.extend_from_slice(b"\r\n");
+            }
+            Self::NullBulkString => {
+                buffer.extend_from_slice(b"$-1\r\n");
+            }
+            Self::NullArray => {
+                buffer.extend_from_slice(b"*-1\r\n");
+            }
+        }
+    }
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
