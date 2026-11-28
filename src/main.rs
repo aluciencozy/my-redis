@@ -227,7 +227,7 @@ fn lrange(mut args: CommandArgs, store: &Store) -> Vec<u8> {
                 let len = match isize::try_from(list.len()) {
                     Ok(len) => len,
                     Err(e) => {
-                        return format!("-ERR list len couldn't convert to isize: {}", e)
+                        return format!("-ERR list len couldn't convert to isize: {}\r\n", e)
                             .into_bytes();
                     }
                 };
