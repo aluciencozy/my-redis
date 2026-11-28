@@ -66,15 +66,29 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
 
     let reply = match command.as_slice() {
         command if command.eq_ignore_ascii_case(b"LPOP") => {
-            let (Some(BulkString(key)), None) = (args.next(), args.next()) else {
+            let Some(BulkString(key)) = args.next() else {
                 return Some(COMMAND_ERROR.to_vec());
+            };
+
+            let count = match (args.next(), args.next()) {
+                (None, None) => None,
+                (Some(BulkString(count)), None) => {
+                    let Ok(count_text) = std::str::from_utf8(&count) else {
+                        return Some(b"-ERR invalid UTF-8\r\n".to_vec());
+                    };
+                    let Ok(count) = count_text.parse::<usize>() else {
+                        return Some(b"-ERR invalid integer\r\n".to_vec());
+                    };
+                    Some(count)
+                }
+                _ => return Some(COMMAND_ERROR.to_vec()),
             };
 
             let mut store = store.lock().unwrap();
             match store.get_mut(&key) {
                 Some(entry) => {
                     if let Value::List(list) = &mut entry.value {
-                        let Some(BulkString(count)) = args.next() else {
+                        let Some(count) = count else {
                             let return_value = match list.pop_front() {
                                 Some(value) => encode_bulk_string(&value),
                                 None => b"$-1\r\n".to_vec(),
@@ -87,18 +101,10 @@ fn command_reply(request: RespValue, store: &Store) -> Option<Vec<u8>> {
                             return Some(return_value);
                         };
 
-                        let Ok(count_text) = std::str::from_utf8(&count) else {
-                            return Some(b"-ERR invalid UTF-8\r\n".to_vec());
-                        };
-
-                        let Ok(mut count) = count_text.parse::<usize>() else {
-                            return Some(b"-ERR invalid integer\r\n".to_vec());
-                        };
-
                         if list.is_empty() || count == 0 {
                             b"*0\r\n".to_vec()
                         } else {
-                            count = count.min(list.len());
+                            let count = count.min(list.len());
 
                             let mut response = format!("*{count}\r\n").into_bytes();
                             for _ in 0..count {
