@@ -384,3 +384,178 @@ fn ping(mut args: CommandArgs) -> Result<RespValue, CommandError> {
         Err(CommandError::WrongNumberOfArguments)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bulk(bytes: &[u8]) -> RespValue {
+        BulkString(bytes.to_vec())
+    }
+
+    fn run(store: &Store, parts: &[&[u8]]) -> Result<RespValue, CommandError> {
+        let request = Array(parts.iter().map(|part| bulk(part)).collect());
+        command_reply(request, store).map(|reply| reply.expect("expected a command reply"))
+    }
+
+    #[test]
+    fn ping_accepts_mixed_case_and_returns_pong() {
+        let store = Store::default();
+
+        assert_eq!(
+            run(&store, &[b"PiNg"]).unwrap(),
+            RespValue::SimpleString(b"PONG".to_vec())
+        );
+    }
+
+    #[test]
+    fn echo_preserves_binary_bytes() {
+        let store = Store::default();
+
+        assert_eq!(
+            run(&store, &[b"ECHO", b"\xff\r\n"]).unwrap(),
+            bulk(b"\xff\r\n")
+        );
+    }
+
+    #[test]
+    fn set_stores_bytes_that_get_returns() {
+        let store = Store::default();
+
+        assert_eq!(
+            run(&store, &[b"SET", b"key", b"\xff\0"]).unwrap(),
+            RespValue::SimpleString(b"OK".to_vec())
+        );
+        assert_eq!(run(&store, &[b"GET", b"key"]).unwrap(), bulk(b"\xff\0"));
+    }
+
+    #[test]
+    fn get_returns_null_for_missing_and_expired_keys() {
+        let store = Store::default();
+        store.lock().unwrap().insert(
+            b"expired".to_vec(),
+            Entry {
+                value: Value::String(b"old".to_vec()),
+                expires_at: Some(Instant::now()),
+            },
+        );
+
+        for key in [b"missing", b"expired"] {
+            assert_eq!(
+                run(&store, &[b"GET", key]).unwrap(),
+                RespValue::NullBulkString
+            );
+        }
+        assert!(store.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_with_zero_expiry_preserves_existing_value() {
+        let store = Store::default();
+        run(&store, &[b"SET", b"key", b"old"]).unwrap();
+
+        assert_eq!(
+            run(&store, &[b"SET", b"key", b"new", b"PX", b"0"]),
+            Err(CommandError::InvalidExpireTime)
+        );
+        assert_eq!(run(&store, &[b"GET", b"key"]).unwrap(), bulk(b"old"));
+    }
+
+    #[test]
+    fn lpush_prepends_and_rpush_appends_items_in_order() {
+        let store = Store::default();
+
+        assert_eq!(
+            run(&store, &[b"RPUSH", b"list", b"c", b"d"]).unwrap(),
+            RespValue::Integer(2)
+        );
+        assert_eq!(
+            run(&store, &[b"LPUSH", b"list", b"b", b"a"]).unwrap(),
+            RespValue::Integer(4)
+        );
+        assert_eq!(
+            run(&store, &[b"LLEN", b"list"]).unwrap(),
+            RespValue::Integer(4)
+        );
+        assert_eq!(
+            run(&store, &[b"LRANGE", b"list", b"0", b"-1"]).unwrap(),
+            Array(vec![bulk(b"a"), bulk(b"b"), bulk(b"c"), bulk(b"d")])
+        );
+    }
+
+    #[test]
+    fn lrange_uses_inclusive_negative_indices() {
+        let store = Store::default();
+        run(&store, &[b"RPUSH", b"list", b"a", b"b", b"c", b"d"]).unwrap();
+
+        assert_eq!(
+            run(&store, &[b"LRANGE", b"list", b"-3", b"-2"]).unwrap(),
+            Array(vec![bulk(b"b"), bulk(b"c")])
+        );
+    }
+
+    #[test]
+    fn lrange_rejects_extra_arguments() {
+        let store = Store::default();
+        run(&store, &[b"RPUSH", b"list", b"a", b"b", b"c", b"d"]).unwrap();
+
+        assert_eq!(
+            run(&store, &[b"LRANGE", b"list", b"-3", b"-2", b"0"]),
+            Err(CommandError::WrongNumberOfArguments),
+        );
+    }
+
+    #[test]
+    fn lpop_with_count_returns_an_array_then_single_pop_removes_last_item() {
+        let store = Store::default();
+        run(&store, &[b"RPUSH", b"list", b"a", b"b", b"c"]).unwrap();
+
+        assert_eq!(
+            run(&store, &[b"LPOP", b"list", b"2"]).unwrap(),
+            Array(vec![bulk(b"a"), bulk(b"b")])
+        );
+        assert_eq!(run(&store, &[b"LPOP", b"list"]).unwrap(), bulk(b"c"));
+        assert_eq!(
+            run(&store, &[b"LPOP", b"list"]).unwrap(),
+            RespValue::NullBulkString
+        );
+        assert!(store.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn lpop_rejects_a_noninteger_count_without_removing_items() {
+        let store = Store::default();
+        run(&store, &[b"RPUSH", b"list", b"a"]).unwrap();
+
+        assert_eq!(
+            run(&store, &[b"LPOP", b"list", b"nope"]),
+            Err(CommandError::InvalidInteger)
+        );
+        assert_eq!(run(&store, &[b"LPOP", b"list"]).unwrap(), bulk(b"a"));
+    }
+
+    #[test]
+    fn lpush_returns_wrong_type_for_a_string_key() {
+        let store = Store::default();
+        run(&store, &[b"SET", b"key", b"value"]).unwrap();
+
+        assert_eq!(
+            run(&store, &[b"LPUSH", b"key", b"item"]),
+            Err(CommandError::WrongType)
+        );
+    }
+
+    #[test]
+    fn dispatcher_distinguishes_unknown_commands_from_extra_arguments() {
+        let store = Store::default();
+
+        assert_eq!(
+            run(&store, &[b"UNKNOWN"]),
+            Err(CommandError::UnsupportedCommand)
+        );
+        assert_eq!(
+            run(&store, &[b"PING", b"extra"]),
+            Err(CommandError::WrongNumberOfArguments)
+        );
+    }
+}
